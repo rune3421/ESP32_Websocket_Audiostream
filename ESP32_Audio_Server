@@ -1,0 +1,179 @@
+#include <WiFi.h> // Include WIFi Library for ESP32
+#include <WebServer.h> // Include WebSwever Library for ESP32
+#include <ArduinoJson.h> // Include ArduinoJson Library
+#include <WebSocketsServer.h>  // Include Websocket Library
+
+const char* ssid = "NETGEAR76";  // Your SSID
+const char* password = "elegantplanet085"; // Your Password
+
+float sound = A0;
+
+String jsonString; // Temporary storage for the JSON String
+
+WebServer server(80);  // create instance for web server on port "80"
+WebSocketsServer webSocket = WebSocketsServer(81);  //create instance for webSocket server on port"81"
+
+/*
+Web Page Comments:
+<style> to </style> covers the css formatting
+<script> to </script> has two sections. The first part is the functioning Highcharts container with the window and titles
+The second part is the websocket plotter function, which uses "on.Message(event)" to receive data. This data needs to be sent in the call from ESP
+*/
+
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+  <title>ESP Streaming Audio Waveform</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://code.highcharts.com/8.0/highcharts.js"></script>
+  <link rel="icon" href="data:,">
+
+
+  <style>
+body {
+min-width: 300px;
+max-width: 800px;
+height: 400px;
+margin: 0 auto;
+}
+h2 {
+font-family: Arial;
+font-size: 2.5rem;
+text-align: center;
+}
+</style>
+</head>
+
+
+<body>
+<h2>Streaming Audio Waveform</h2>
+<div id="Audio" class="container"></div>
+
+
+<script>
+var chartA = new Highcharts.Chart({
+chart:{ renderTo : 'Audio' },
+title: { text: 'Waveform' },
+series: [{
+showInLegend: false,
+data: []
+}],
+plotOptions: {
+line: { animation: false,
+dataLabels: { enabled: true }
+},
+series: { color: '#059e8a' }
+},
+xAxis: { type: 'datetime',
+dateTimeLabelFormats: { second: '%H:%M:%S' }
+},
+yAxis: {
+title: { text: 'Volume' }
+},
+credits: { enabled: false }
+});
+
+
+  
+  var gateway = `ws://${window.location.hostname}/ws`;
+  var websocket;
+  window.addEventListener('load', onLoad);
+  function initWebSocket() {
+    console.log('Trying to open a WebSocket connection...');
+    websocket = new WebSocket(gateway);
+    websocket.onopen    = onOpen;
+    websocket.onclose   = onClose;
+    websocket.onmessage = onMessage;
+  }
+  function onOpen(event) {
+    console.log('Connection opened');
+  }
+  function onClose(event) {
+    console.log('Connection closed');
+    setTimeout(initWebSocket, 2000);
+  }
+  function onMessage(event) {
+    var x = (new Date()).getTime(),
+    var y = JSON.parse(event.data);
+    document.getElementById('sound').innerHTML = y;
+    console.log(y);
+  }
+    
+    y = parseFloat(sound); //This part might need to include the json deserialize before parsing for y. Go back to the ESPx2 websocket codebase to add that step in the dataflow
+    if(chartA.series[0].data.length > 50) {
+    chartA.series[0].addPoint([x, y], true, true, true);
+    } else {
+    chartA.series[0].addPoint([x, y], true, false, true);
+    };
+  }
+  function onLoad(event) {
+    initWebSocket();
+  }
+</script>
+</body>
+</html>
+)rawliteral";
+
+//////////////////////////////////////////////
+//End Web Page
+//////////////////////////////////////////////
+
+// This function gets a call when a WebSocket event occurs
+void webSocketEvent(byte num, WStype_t type, uint8_t * payload, size_t length) {
+  switch (type) {
+    case WStype_DISCONNECTED: // enum that read status this is used for debugging.
+      Serial.print("WS Type ");
+      Serial.print(type);
+      Serial.println(": DISCONNECTED");
+      break;
+    case WStype_CONNECTED:  // Check if a WebSocket client is connected or not
+      Serial.print("WS Type ");
+      Serial.print(type);
+      Serial.println(": CONNECTED");
+      break;
+    case WStype_TEXT: // check responce from client
+      Serial.println(); // the payload variable stores teh status internally
+      Serial.println(payload[0]);           
+      break;
+  }
+}
+
+void update_webpage()
+{
+  StaticJsonDocument<100> doc;
+  // create an object
+  JsonObject object = doc.to<JsonObject>();
+  object["sound"] = analogRead(sound) ; //this is the tag of each kind of data to deserialize on the other end. Make sure to use this for multiple sensors later
+  serializeJson(doc, jsonString); // serialize the object and save teh result to teh string variable.
+  //Serial.println(sound); // print the string for debugging.
+  webSocket.broadcastTXT(jsonString); // send the JSON object through the websocket
+  jsonString = ""; // clear the String.
+}
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(115200); // Init Serial for Debugging.
+  WiFi.begin(ssid, password); // Connect to Wifi 
+  while (WiFi.status() != WL_CONNECTED) { // Check if wifi is connected or not
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  // Print the IP address in the serial monitor windows.
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  // Initialize a web server on the default IP address. and send the webpage as a response.
+  server.on("/", []() {
+    server.send(200, "text\html", index_html);
+  });
+  server.begin(); // init the server
+  webSocket.begin();  // init the Websocketserver
+  webSocket.onEvent(webSocketEvent);  // init the webSocketEvent function when a websocket event occurs 
+}
+
+void loop() {
+  server.handleClient();  // webserver methode that handles all Client
+  webSocket.loop(); // websocket server methode that handles all Client
+  update_webpage(); //post data
+}
+
